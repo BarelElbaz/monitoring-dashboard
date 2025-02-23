@@ -21,32 +21,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 def load_config(config_file='config.json'):
-    # First try to load from the same directory as the executable
-    import sys
-    if getattr(sys, 'frozen', False):
-        # Running as a bundled app
-        if sys.platform == 'darwin':
-            # On macOS, look in the parent directory of the .app bundle
-            app_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
-            config_path = os.path.join(app_path, config_file)
-        else:
-            # On other platforms, look next to the executable
-            app_path = os.path.dirname(sys.executable)
-            config_path = os.path.join(app_path, config_file)
-    else:
-        # Running in development
-        config_path = config_file
-
-    try:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        # Expand the user_data_dir if it contains '~'
-        if 'user_data_dir' in config:
-            config['user_data_dir'] = os.path.expanduser(config['user_data_dir'])
-        return config
-    except Exception as e:
-        logging.error(f"Failed to load config from {config_path}: {str(e)}")
-        raise
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    # Expand the user_data_dir if it contains '~'
+    if 'user_data_dir' in config:
+        config['user_data_dir'] = os.path.expanduser(config['user_data_dir'])
+    return config
 
 def configure_logging(log_level, log_file):
     numeric_level = getattr(logging, log_level.upper(), None)
@@ -121,8 +101,12 @@ def init_driver(config):
 def scroll_page(driver, config, scrollable_element_selector=None):
     """
     Scrolls the page (or a scrollable container if selector is provided) while
-    handling potential 'StaleElementReferenceException'.
+    handling potential exceptions. Will raise TimeoutException if the page becomes
+    unresponsive, allowing the caller to refresh the page.
     """
+    # Set script timeout to prevent hanging
+    original_timeout = driver.timeouts.script
+    driver.set_script_timeout(10)  # 10 seconds max for JS execution
     try:
         scroll_pause_at_top = config.get('scroll_pause_at_top', 2)
         scroll_pause_at_bottom = config.get('scroll_pause_at_bottom', 5)
@@ -248,16 +232,17 @@ def wait_for_page_load(driver, timeout, check_element_xpath=None):
         WebDriverWait(driver, timeout).until(
             lambda d: d.execute_script('return document.readyState') == 'complete'
         )
-        logging.debug("Initial page load complete (document.readyState == 'complete').")
+        logging.debug("Initial page load complete")
 
         if check_element_xpath:
             # If a specific element is provided, wait for that element to be visible
             WebDriverWait(driver, timeout).until(
                 EC.visibility_of_element_located((By.XPATH, check_element_xpath))
             )
-            logging.debug(f"Element located and visible: {check_element_xpath}")
+            logging.debug(f"Element located: {check_element_xpath}")
 
-        logging.info("Page fully loaded and ready.")
+        return True
+
     except TimeoutException:
         logging.warning(f"Page load timed out after {timeout} seconds but continuing.")
     except Exception as e:
@@ -422,85 +407,47 @@ def execute_pre_actions(driver, url, config):
 
 
 def handle_scrolling(driver, url, config):
-    scrollable_element_selector = None
-
-    if "grafana" in url.lower():
-        # For Grafana dashboards, find the scrollable container
-        try:
-            scrollable_element_selector = 'div.scrollbar-view'
-            logging.debug("Found Grafana scrollable container.")
-        except NoSuchElementException:
-            logging.error("Could not find the Grafana scrollable container. Using default scrolling.")
-
-    # Scroll the page
-    scroll_page(driver, config, scrollable_element_selector)
-
-# ------------------ Tab Management Functions ------------------
-
-def refresh_tab(driver, url, config):
-    """Attempt to refresh a tab with fallback mechanisms."""
     try:
-        logging.info(f"Attempting to refresh tab for URL: {url}")
-        driver.refresh()
-        wait_for_page_load(driver, config.get('page_load_timeout', 60))
-        return True
-    except Exception as e:
-        logging.error(f"Failed to refresh tab for {url}: {e}")
+        # Get scrollable element selector for Grafana
+        scrollable_element_selector = None
+        if "grafana" in url.lower():
+            try:
+                element = driver.find_element(By.CSS_SELECTOR, 'div.scrollbar-view')
+                if element.is_displayed():
+                    scrollable_element_selector = 'div.scrollbar-view'
+            except NoSuchElementException:
+                logging.debug("No Grafana scrollable container found")
+
+        # Try to scroll
         try:
-            # Fallback: Try full page reload
-            return load_url(driver, url, config)
-        except Exception as reload_error:
-            logging.error(f"Failed to reload URL {url}: {reload_error}")
-            return False
+            scroll_page(driver, config, scrollable_element_selector)
+            return True, False  # Success, no restart needed
+        except (TimeoutException, WebDriverException) as e:
+            logging.warning(f"Scroll failed, trying refresh: {e}")
+            try:
+                driver.refresh()
+                wait_for_page_load(driver, config.get('page_load_timeout', 30))
+                scroll_page(driver, config, scrollable_element_selector)
+                return True, False  # Success after refresh
+            except Exception as refresh_error:
+                logging.error(f"Refresh failed, needs restart: {refresh_error}")
+                return False, True  # Failed, needs restart
 
-def recreate_tab(driver, url, config):
-    """Create a new tab for the given URL and close the old one."""
-    try:
-        current_handle = driver.current_window_handle
-        # Open new tab
-        driver.execute_script("window.open('')")
-        driver.switch_to.window(driver.window_handles[-1])
-        
-        # Load URL in new tab
-        success = load_url(driver, url, config)
-        if success:
-            # Close old tab
-            driver.switch_to.window(current_handle)
-            driver.close()
-            driver.switch_to.window(driver.window_handles[-1])
-            return driver.current_window_handle
-        else:
-            # If failed, close new tab and return to original
-            driver.close()
-            driver.switch_to.window(current_handle)
-            return None
     except Exception as e:
-        logging.error(f"Failed to recreate tab for {url}: {e}")
-        return None
-
-def check_tab_health(driver, url, config, last_refresh_time):
-    """Check tab health and refresh/recreate if needed."""
-    current_time = time.time()
-    tab_lifetime = current_time - last_refresh_time
-    max_tab_lifetime = config.get('max_tab_lifetime', 3600)
-    tab_refresh_interval = config.get('tab_refresh_interval', 1800)
-    
-    # Check if tab needs periodic refresh
-    if tab_lifetime > tab_refresh_interval:
-        logging.info(f"Tab refresh interval reached for {url}")
-        if refresh_tab(driver, url, config):
-            return current_time
-    
-    # Check if tab exceeded lifetime
-    if tab_lifetime > max_tab_lifetime:
-        logging.warning(f"Tab lifetime exceeded for {url}, attempting recreation")
-        new_handle = recreate_tab(driver, url, config)
-        if new_handle:
-            return current_time
-    
-    return last_refresh_time
+        logging.error(f"Unexpected error: {e}")
+        return False, True  # Failed, needs restart
 
 # ------------------ Main Function ------------------
+def restart_browser(config):
+    """Restart the browser and return a new driver instance"""
+    try:
+        driver = init_driver(config)
+        return driver
+    except Exception as e:
+        logging.error(f"Failed to restart browser: {e}")
+        logging.debug(traceback.format_exc())
+        raise
+
 def main():
     config = load_config()
     urls = config.get('urls', [])
@@ -509,118 +456,141 @@ def main():
         return
 
     configure_logging(config.get('log_level', 'INFO'), config.get('log_file', 'dashboard_rotator.log'))
+
     logging.info("Starting the dashboard rotator script.")
 
-    while True:  # Outer loop for browser session management
-        driver = None
-        try:
-            session_start_time = time.time()
-            max_browser_lifetime = config.get('max_browser_lifetime', 43200)  # 12 hours default
-            driver = init_driver(config)
-            
-            mode = config.get('mode', 'SingleTab').lower()
-            if mode == 'multitab':
-                # Multi-tab mode: open each URL in a separate tab
-                tabs = {}
-                last_refresh_times = {}
+    driver = None
 
-                # Open each URL in a separate tab
-                for idx, url in enumerate(urls):
-                    try:
-                        if idx == 0:
-                            logging.info(f"Loading URL in initial tab: {url}")
-                            success = load_url(driver, url, config)
+    try:
+        driver = init_driver(config)
+
+        mode = config.get('mode', 'SingleTab').lower()
+        do_periodic_refresh = config.get('do_periodic_refresh', False)
+        refresh_interval = config.get('refresh_interval', 3600)
+
+        if mode == 'multitab':
+            # Multi-tab mode: open each URL in a separate tab
+            tabs = {}
+            last_refresh_times = {}
+
+            # Open each URL in a separate tab
+            for idx, url in enumerate(urls):
+                if idx == 0:
+                    logging.info(f"Loading URL in initial tab: {url}")
+                    success = load_url(driver, url, config)
+                    if not success:
+                        logging.error(f"Failed to load URL: {url}")
+                        continue
+                    tabs[url] = driver.current_window_handle
+                else:
+                    logging.info(f"Opening new tab for URL: {url}")
+                    driver.execute_script("window.open('');")
+                    driver.switch_to.window(driver.window_handles[-1])
+                    success = load_url(driver, url, config)
+                    if not success:
+                        logging.error(f"Failed to load URL: {url}")
+                        continue
+                    tabs[url] = driver.current_window_handle
+
+                # Initialize last refresh time for each tab
+                last_refresh_times[url] = time.time()
+
+            # Main loop to rotate between tabs
+            while True:
+                for url in urls:
+                    logging.info(f"Switching to URL: {url}")
+                    driver.switch_to.window(tabs[url])
+
+                    # Optionally refresh the tab if doPeriodicRefresh is True and refresh interval has passed
+                    if do_periodic_refresh:
+                        last_refresh_times[url] = refresh_session_if_needed(driver, last_refresh_times[url], config, url)
+
+                    # Perform any pre-actions
+                    execute_pre_actions(driver, url, config)
+
+                    # Handle scrolling with retry and refresh
+                    success, needs_restart = handle_scrolling(driver, url, config)
+                    if not success:
+                        if needs_restart:
+                            logging.warning(f"Scrolling failed for {url}, restarting browser")
+                            driver.quit()
+                            driver = restart_browser(config)
+                            
+                            # Reopen all tabs
+                            tabs.clear()
+                            for idx, url_to_reopen in enumerate(urls):
+                                if idx == 0:
+                                    success = load_url(driver, url_to_reopen, config)
+                                    if success:
+                                        tabs[url_to_reopen] = driver.current_window_handle
+                                else:
+                                    driver.execute_script("window.open('');")
+                                    driver.switch_to.window(driver.window_handles[-1])
+                                    success = load_url(driver, url_to_reopen, config)
+                                    if success:
+                                        tabs[url_to_reopen] = driver.current_window_handle
+                            
+                            # Reset refresh times
+                            for refresh_url in urls:
+                                last_refresh_times[refresh_url] = time.time()
+                            break  # Break the URL loop to start fresh after browser restart
                         else:
-                            logging.info(f"Opening new tab for URL: {url}")
-                            driver.execute_script("window.open('');")
-                            driver.switch_to.window(driver.window_handles[-1])
-                            success = load_url(driver, url, config)
-
-                        if success:
-                            tabs[url] = driver.current_window_handle
-                            last_refresh_times[url] = time.time()
-                        else:
-                            logging.error(f"Failed to load URL: {url}")
-                            if idx > 0:
-                                driver.close()  # Close the failed tab
-                                driver.switch_to.window(driver.window_handles[0])
-                    except Exception as e:
-                        logging.error(f"Error initializing tab for {url}: {e}")
-                        if idx > 0:
-                            try:
-                                driver.close()
-                                driver.switch_to.window(driver.window_handles[0])
-                            except:
-                                pass
-
-                # Main loop to rotate between tabs
-                while True:
-                    current_time = time.time()
-                    
-                    # Check if browser session needs reset
-                    if current_time - session_start_time > max_browser_lifetime:
-                        logging.info("Browser session lifetime exceeded, initiating reset")
-                        raise Exception("Browser session lifetime exceeded")
-
-                    for url in urls:
-                        if url not in tabs:
+                            logging.warning(f"Scrolling failed for {url}, moving to next URL")
                             continue
 
-                        try:
-                            logging.info(f"Processing URL: {url}")
-                            driver.switch_to.window(tabs[url])
+        else:
+            # Single-tab mode: load each URL in the same tab
+            while True:
+                for url in urls:
+                    logging.info(f"Loading URL: {url}")
+                    success = load_url(driver, url, config)
+                    if not success:
+                        continue  # Skip to the next URL
 
-                            # Check tab health and refresh if needed
-                            new_refresh_time = check_tab_health(driver, url, config, last_refresh_times[url])
-                            if new_refresh_time != last_refresh_times[url]:
-                                last_refresh_times[url] = new_refresh_time
-                                # Skip other operations if tab was just refreshed
-                                continue
+                    # Perform any pre-actions
+                    execute_pre_actions(driver, url, config)
 
-                            # Perform pre-actions and handle scrolling
-                            execute_pre_actions(driver, url, config)
-                            handle_scrolling(driver, url, config)
+                    # Handle scrolling with retry and refresh
+                    success, needs_restart = handle_scrolling(driver, url, config)
+                    if not success:
+                        if needs_restart:
+                            logging.warning(f"Scrolling failed for {url}, restarting browser")
+                            driver.quit()
+                            driver = restart_browser(config)
+                            
+                            # Reopen all tabs
+                            tabs.clear()
+                            for idx, url_to_reopen in enumerate(urls):
+                                if idx == 0:
+                                    success = load_url(driver, url_to_reopen, config)
+                                    if success:
+                                        tabs[url_to_reopen] = driver.current_window_handle
+                                else:
+                                    driver.execute_script("window.open('');")
+                                    driver.switch_to.window(driver.window_handles[-1])
+                                    success = load_url(driver, url_to_reopen, config)
+                                    if success:
+                                        tabs[url_to_reopen] = driver.current_window_handle
+                            
+                            # Reset refresh times
+                            for refresh_url in urls:
+                                last_refresh_times[refresh_url] = time.time()
+                            break  # Break the URL loop to start fresh after browser restart
+                        else:
+                            logging.warning(f"Scrolling failed for {url}, moving to next URL")
+                            continue
 
-                        except Exception as e:
-                            logging.error(f"Error processing {url}: {e}")
-                            try:
-                                # Attempt to recreate the problematic tab
-                                new_handle = recreate_tab(driver, url, config)
-                                if new_handle:
-                                    tabs[url] = new_handle
-                                    last_refresh_times[url] = time.time()
-                            except Exception as tab_error:
-                                logging.error(f"Failed to recover tab for {url}: {tab_error}")
-                                if url in tabs:
-                                    del tabs[url]
 
-            else:
-                # Single-tab mode implementation remains unchanged
-                while True:
-                    current_time = time.time()
-                    if current_time - session_start_time > max_browser_lifetime:
-                        logging.info("Browser session lifetime exceeded, initiating reset")
-                        raise Exception("Browser session lifetime exceeded")
-
-                    for url in urls:
-                        logging.info(f"Loading URL: {url}")
-                        success = load_url(driver, url, config)
-                        if success:
-                            execute_pre_actions(driver, url, config)
-                            handle_scrolling(driver, url, config)
-
-        except Exception as e:
-            logging.error(f"Browser session error: {e}")
-            logging.debug(traceback.format_exc())
-        finally:
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        logging.debug(traceback.format_exc())
+    finally:
+        try:
             if driver:
-                try:
-                    driver.quit()
-                except Exception as quit_error:
-                    logging.error(f"Error closing browser: {quit_error}")
-            
-            logging.info("Waiting before starting new browser session...")
-            time.sleep(5)  # Wait before starting new session
+                driver.quit()
+        except Exception as e:
+            logging.error(f"Error while closing browser: {e}")
+        logging.info("Dashboard rotator script has stopped.")
 
 
 if __name__ == "__main__":
