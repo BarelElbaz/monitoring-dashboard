@@ -1,0 +1,30 @@
+{
+    "urls": [
+        "http://nagios.company.net/nagios/cgi-bin/status.cgi?host=all&servicestatustypes=16&sorttype=2&sortoption=6",
+        "https://grafana.company.net/"
+    ],
+    "nagios_credentials": {
+        "username": "",
+        "password": ""
+    },
+    "run_pre_actions": true,
+    "mode": "MultiTab",
+    "min_display_time": 5,
+    "max_display_time": 150,
+    "scroll_pause_at_top": 0,
+    "scroll_pause_at_bottom": 0,
+    "do_periodic_refresh": true,
+    "refresh_interval": 3600,
+    "scaling_factor": 0.025,
+    "scroll_step_duration": 0.008,
+    "browser": "chrome",
+    "chromedriver_path": "",
+    "log_level": "INFO",
+    "log_file": "dashboard_rotator.log",
+    "page_load_timeout": 90,
+    "user_data_dir": "/Users/barele/Library/Application Support/Google/Chrome/",
+    "profile_directory": "Profile 1",
+    "max_browser_lifetime": 43200,
+    "max_tab_lifetime": 3600,
+    "tab_refresh_interval": 1800
+}
