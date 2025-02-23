@@ -21,12 +21,32 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 def load_config(config_file='config.json'):
-    with open(config_file, 'r') as f:
-        config = json.load(f)
-    # Expand the user_data_dir if it contains '~'
-    if 'user_data_dir' in config:
-        config['user_data_dir'] = os.path.expanduser(config['user_data_dir'])
-    return config
+    # First try to load from the same directory as the executable
+    import sys
+    if getattr(sys, 'frozen', False):
+        # Running as a bundled app
+        if sys.platform == 'darwin':
+            # On macOS, look in the parent directory of the .app bundle
+            app_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
+            config_path = os.path.join(app_path, config_file)
+        else:
+            # On other platforms, look next to the executable
+            app_path = os.path.dirname(sys.executable)
+            config_path = os.path.join(app_path, config_file)
+    else:
+        # Running in development
+        config_path = config_file
+
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        # Expand the user_data_dir if it contains '~'
+        if 'user_data_dir' in config:
+            config['user_data_dir'] = os.path.expanduser(config['user_data_dir'])
+        return config
+    except Exception as e:
+        logging.error(f"Failed to load config from {config_path}: {str(e)}")
+        raise
 
 def configure_logging(log_level, log_file):
     numeric_level = getattr(logging, log_level.upper(), None)

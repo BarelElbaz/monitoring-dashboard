@@ -16,7 +16,6 @@ def build_executable():
         'pyinstaller',
         '--clean',    # Clean PyInstaller cache
         '--log-level=INFO',
-        f'--add-data=config.json{separator}.',  # Include config.json
         '--name=monitoring-dashboard',  # Name of the executable
     ]
     
@@ -44,8 +43,15 @@ def build_executable():
     print(f"Command: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
     
-    # Copy config.json to dist directory
-    shutil.copy2('config.json', 'dist')
+    # Copy config.json next to the app bundle
+    if system == 'darwin':
+        app_path = os.path.join('dist', 'monitoring-dashboard.app')
+        if os.path.exists(app_path):
+            config_dest = os.path.dirname(app_path)
+            shutil.copy2('config.json', config_dest)
+    else:
+        # For other platforms, copy next to the executable
+        shutil.copy2('config.json', 'dist')
     
     print(f"\nBuild complete! Executable is in the 'dist' directory.")
     print("Make sure to distribute config.json along with the executable.")

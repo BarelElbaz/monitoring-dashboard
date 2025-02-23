@@ -30,12 +30,18 @@ python build.py
 
 ## Configuration
 
+The application uses `config.json` for its settings. After installation:
+- On macOS: The config file is located next to the .app bundle
+- On Windows/Linux: The config file is located next to the executable
+
 Edit `config.json` to customize:
 - URLs to monitor
 - Browser settings
 - Refresh intervals
 - Scroll behavior
 - Nagios credentials (if needed)
+
+You can modify the config file without rebuilding the application.
 
 ## Troubleshooting
 
