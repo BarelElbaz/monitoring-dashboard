@@ -1,5 +1,3 @@
-selenium>=4.0.0
-pyinstaller>=6.0.0
-Pillow>=10.0.0  # For icon generation
-winshell>=0.6.1; sys_platform == 'win32'  # For Windows shortcuts
-pywin32>=306; sys_platform == 'win32'  # For Windows shortcuts
+# Core dependencies
+selenium~=4.15.0  # Web automation
+pyinstaller~=6.3.0  # Application bundling
