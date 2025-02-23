@@ -386,8 +386,7 @@ def load_url(driver, url, config):
         if nagios_username and nagios_password:
             set_nagios_basic_auth(driver, nagios_username, nagios_password)
         else:
-            logging.error("Nagios username and password are required for HTTP Basic Authentication.")
-            return False  # Indicate failure to load URL
+            logging.info("No Nagios credentials provided - skipping authentication")
     driver.get(url)
     wait_for_page_load(driver, config.get('page_load_timeout', 60))
     time.sleep(5)  # Additional wait time for dynamic content
