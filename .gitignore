@@ -40,7 +40,3 @@ dashboard_rotator.log
 *.swp
 *.swo
 .DS_Store
-
-# Project specific
-base_icon.png
-icons/

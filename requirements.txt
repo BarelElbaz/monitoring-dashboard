@@ -1,3 +1,3 @@
 # Core dependencies
 selenium~=4.15.0  # Web automation
-pyinstaller~=6.3.0  # Application bundling
+pyinstaller~=6.12.0  # Application bundling

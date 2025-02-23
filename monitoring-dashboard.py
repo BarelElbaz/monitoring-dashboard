@@ -512,6 +512,7 @@ def main():
     logging.info("Starting the dashboard rotator script.")
 
     while True:  # Outer loop for browser session management
+        driver = None
         try:
             session_start_time = time.time()
             max_browser_lifetime = config.get('max_browser_lifetime', 43200)  # 12 hours default
